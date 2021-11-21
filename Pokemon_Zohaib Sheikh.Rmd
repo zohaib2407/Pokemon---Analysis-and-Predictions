@@ -1,0 +1,309 @@
+---
+title: "Pokemon Go - Analysis"
+author: "Zohaib Sheikh"
+date: "12/11/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+**Loading relevant libraries**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+library(tidyverse)
+library(lubridate)
+library(caret) 
+library(readxl)
+library("ggplot2")
+library("sqldf")
+library(ggrepel)
+library(rpart)
+library(pROC)
+library('glmnet')
+library(ROCR)
+library(e1071)
+```
+
+**1 - Reading the Data**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+df<-read_excel('C:/Users/Zohaib Sheikh/Desktop/Summer Int/Assignments/pokemon_data_science.xlsx')
+```
+
+**2 - Understanding the Data**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+dim(df)
+str(df)
+head(df)
+summary(df)
+colSums(is.na(df))
+df%>%select_if(is.character)%>%select(-c(Name))%>%sapply(unique)
+```
+*The Dataset has 12 categorical variables and 11 numeric variables. Our response variable is 'isLegendary' having 6.4% of total Pokemon as Legendary Pokemons(our class of Interest). The dataset looks structured which we will explore further.* \
+
+
+
+
+**3 - Data Cleaning - Handling Null Values**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+colSums(is.na(df))
+```
+* Here we looked at the null values across the dataset. Three variables have null values: 'Type 2', 'Egg_group 2' and 'Pr_male'. 
+* We will handle the three variables separately. 
+  + Type 2: These are 371 pokemons with undefined type_2. Hence we will replace the null values for these with the value 'No Type 2'.
+  + Egg_group 2: These are 530 pokemons with undefined Egg group 2. Hence we will replace the null values for these with the value 'No Egg_Group 2'. \
+  
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+
+df$Type_2[is.na(df$Type_2)]<-'No Type 2'
+unique(df$Type_2)
+
+df$Egg_Group_2[is.na(df$Egg_Group_2)]<-'No Egg_Group 2'
+```
+
+  + Pr_male : This is a tricky column to handle the null values. There are 77 pokemons null 'pr_male' values. To handle these, let's dig a bit deeper into the data. Looking at these 77 records, we see that 40 of 77 are legendary pokemons which is our class of interest. As we have only 6.4% fill rate for our class of interest, we can't remove these.  Also, when we look at the column 'hasGender', we observe that there are 77 pokemons with undefined gender and these 77 pokemons are the same pokemons which have null values for their 'Pr_male' column. So, in order to handle these, we impute these null values with 0.5 as the gender for these is undefined.
+
+
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+
+df%>%group_by(hasGender)%>%summarise(n=n())
+mean(df$hasGender[is.na(df$Pr_Male)])
+unique(df$hasGender[is.na(df$Pr_Male)])
+unique(df$isLegendary[is.na(df$Pr_Male)])
+df%>%filter(is.na(df$Pr_Male)==TRUE)%>%group_by(isLegendary)%>%summarise(n=n())
+
+df$Pr_Male[is.na(df$Pr_Male)]<-0.5
+```
+*Next we will convert all our categorical variables as Factors with different labels.*
+
+**4 - Data Cleaning - Changing the char and logical variables to Factors**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+df <- as.data.frame(unclass(df),stringsAsFactors = TRUE)
+df$isLegendary<-as.factor(df$isLegendary)
+df$hasMegaEvolution<-as.factor(df$hasMegaEvolution)
+df$hasGender<-as.factor(df$hasGender)
+df$Number<-as.factor(df$Number)
+df$Generation<-as.factor(df$Generation)
+```
+
+*Next, we will explore the data more by slicing, dicing and viewing from different angles. We will also look at some quick visualizations.*
+
+
+**5 - Data Exploration - Visualization**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+ggplot(df, aes(isLegendary)) +
+ geom_bar()+ geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white")
+
+ggplot(df, aes(Total, fill = isLegendary)) +
+  geom_histogram(binwidth = 40,boundary = 1)
+
+ggplot(df, aes(hasGender, fill = isLegendary)) +
+ geom_bar() 
+
+df %>% ggplot(aes(x= Type_1, fill = Generation)) + geom_bar() + coord_flip()
+
+df %>% ggplot(aes(x= Type_2, fill = Generation)) + geom_bar() + coord_flip()
+
+df %>% ggplot(aes(x= isLegendary, y = Total)) + geom_boxplot()
+
+ggplot(df, aes(isLegendary, ..count..)) + geom_bar(aes(fill = hasMegaEvolution), position = "dodge")
+
+df %>% ggplot(aes(x= isLegendary, y = Weight_kg)) + geom_boxplot()
+df %>% ggplot(aes(x= isLegendary, y = Height_m)) + geom_boxplot()
+df %>% ggplot(aes(x= isLegendary, y = Catch_Rate)) + geom_boxplot()
+df%>%group_by(isLegendary)%>%summarise(avg_rate=mean(Catch_Rate))
+
+df%>%filter(isLegendary == 'TRUE')%>%group_by(Generation,isLegendary)%>%summarise(n=n())%>%arrange(desc(n))
+```
+> Some Insights from Data
+
+* Our dataset is imbalanced as our class of interest (isLegendary = True) is only 6.4%. 
+* Legendary Pokemons have highest total stats among all pokemons (>580).
+* Only 13% of Legendary pokemons have their gender defined. 
+* Water is the most common Pokemon type (15%).
+* Legendary Pokemons are heavier and taller. 
+* Legendary Pokemons have the lowest catch rate of 6.7%. \
+
+
+
+## Answers to Assignment Questions
+
+>Q1. What is the number of raid battles per player divided by the number of raid battles per battler?
+
+a - Number of Raid battles = 4 \
+b - Number of Players = 4 \
+d -Number of Raid battles per player = a/b = 1\
+e - Number of battlers = 3\
+f -Number of Raid battles per player = a/e = 1.3333333\
+**Number of raid battles per player divided by the number of raid battles per battler - d/f = 0.75**\
+
+
+
+>Q2. Suppose the Pokémon Dataset is a SQL table called ‘PokemonStats’. In a SQL dialect you are most comfortable with, find…
+
+**A. The number of distinct primary types present across Pokemon**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+sqldf("select Type_1  as Primary_Types, count(Number) as number_of_pokemon from df group by 1 order by 2 desc")
+```
+
+**B. The average Total stats for each Pokemon generation**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+sqldf("select Generation, avg(Total) as average_total_stats from df group by 1 order by 1 asc")
+```
+
+**C. The white Pokemon with the highest Total stats**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+sqldf("select Name,Color,Total from df where Color ='White' and Total = (select max(Total) from df where Color ='White') ")
+```
+> Q3. Imagine a new Pokemon game where you are only allowed to collect ONE type of Pokemon. Similar to other Pokemon games, your goal is to have the strongest battlers and  defenders for battles and raids. Which type will you pick? Why? \
+
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+df%>%group_by(Type_1)%>%summarize(Avg=mean(Total),Avg_attack=mean(Attack),Avg_defense=mean(Defense),Avg_splattack=mean(Sp_Atk),Avg_Spldefense=mean(Sp_Def),Avg_hp = mean(HP),Avg_Speed=mean(Speed))%>%arrange(desc(Avg))
+df%>%group_by(Type_1)%>%summarize(Avg=mean(Total),Avg_attack=mean(Attack),Avg_defense=mean(Defense))%>% ggplot(aes(Type_1, Avg))+geom_col()
+df3<-df%>%group_by(Type_1,isLegendary)%>%summarise(n=n())
+df3<-df3%>%group_by(Type_1)%>%mutate(prop=n/sum(n))
+df3%>%filter(isLegendary=='TRUE')%>%arrange(desc(prop))
+```
+
+
+*If I am allowed to collect only one type of Pokemon, I would choose to collect the type 'Dragon'. Pokemons of type 'Dragon' are the best Attackers and one of the best Defenders. Among all the types, Dragon have the highest average stats, highest average attack stats, highest average special defense and highest average health points. Also, they are in top 3 in terms of their average defense stats, average special attack stats, and average speed. Hence, the 'Dragon' would be the optimal choice as both strong battlers and defenders. This is also evident by the fact that the type 'Dragon' have the highest proportion (30%) of Legendary Pokemons.*\ 
+
+> Q4. Model Building
+
+*Let's look at our dataset that will be used for building our predictive Models.*
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+str(df)
+```
+
+
+**Checking variable Importance**\
+
+*All our Numeric Variables have high importance. However, the numerical variables are correlated which we will hanlde during building when predictive Model*\
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+aucAll<- sapply(df %>% select_if(is.numeric), auc, response=df$isLegendary) 
+aucAll
+```
+
+
+**Splitting the train test data**
+
+*Instead of K-fold cross validation,we will use a 70-30 split for our train and test set.*\
+*We remove the leakage variable (Catch Rate) from our dataset.*\
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+df<-df%>%select(-Catch_Rate)
+trn=0.7
+nr<-nrow(df)
+trnd<-sample(1:nr,trn*nr,replace=FALSE)
+train_data<-df[trnd,]
+test_data<-df[-trnd,]
+dim(train_data)
+dim(test_data)
+```
+*Selecting different models to build*
+
+*   Initially we will use all the variables for building the model. Our Dataset has few collinear variables. We will handle multi-collinearity using Lasso Regression.
+*   We can choose multiple classification models for predicting the Legendary status. We can use regression models, regression models using different kinds of regularization, decision trees, ensemble models like Random Forest, GBM etc. 
+* However, given our dataset is small, there will be higher chances for advanced models with large number of parameters like GBM, Random Forest, Decision Trees being prone to overfit and over-learn. 
+* In general, the simpler the machine learning algorithm, the better it will learn from small datasets.
+* From an ML perspective, small data requires models that have low complexity (or high bias) to avoid overfitting the model to the data.
+* Hence, we will rely on 3 simpler models: 
+  + Logistic Regression without Regularization
+  + Logistic Regression with Regularization (Lasso) - Will handle Multi-Colliniearity
+  + Naive Bayes Classifier with Laplace Smoothing
+* For evaluating each Model, we will look at their in sample accuracy as well as the confusion matrix, the AUC value, the ROC Curve.
+
+
+
+
+**Regression Model - Without Regularization**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+y_train_data<-factor(if_else(train_data$isLegendary == "TRUE", '1', '0'))
+x_train_data<-train_data%>%select(-c(isLegendary,Number,Name))%>% data.matrix() %>% as.data.frame()
+glm_basic<-glm(formula = y_train_data ~ ., data = x_train_data, family="binomial")
+summary(glm_basic)
+#Basic Evaluation
+fitModel <-as.data.frame(if_else(glm_basic$fitted.values > 0.5, 1, 0))
+table(Actual = y_train_data, Predicted = fitModel[,1])
+
+#Evaluation on test data
+y_test_data<-factor(if_else(test_data$isLegendary == "TRUE", '1', '0'))
+x_test_data<-test_data %>%select(-c(isLegendary,Number,Name))%>% data.matrix() %>% as.data.frame()
+predModel <- predict(glm_basic, newdata = x_test_data, type = "response")
+predModelCls <-as.data.frame(if_else(predModel > 0.5, 1, 0))
+table(Actual = y_test_data, Predicted = predModelCls[,1])
+
+#ROC
+prediction(predModel, y_test_data) %>% performance(measure = "tpr", x.measure = "fpr") %>% plot()
+abline(a=0, b= 1)
+
+#AUC
+prediction(predModel, y_test_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+```
+
+**Regression Model - With Regularization**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+y_train_data<-factor(if_else(train_data$isLegendary == "TRUE", '1', '0'))
+x_train_data<-train_data%>%select(-c(isLegendary,Number,Name))
+glm_cv<-cv.glmnet(data.matrix(x_train_data),y_train_data, family="binomial", alpha=1)
+plot(glm_cv)
+
+coef(glm_cv, s = glm_cv$lambda.min)
+
+#Basic Evaluation
+PredTrn <- predict(glm_cv, data.matrix(x_train_data), type="class",s="lambda.min")
+table(actuals=train_data$isLegendary, preds=PredTrn)
+
+
+#Evaluation on test data
+y_test_data<-factor(if_else(test_data$isLegendary == "TRUE", '1', '0'))
+x_test_data<-test_data%>%select(-c(isLegendary,Number,Name))
+
+glmPredls_1=predict(glm_cv,data.matrix(x_test_data), s="lambda.min" )
+glmPredls_p=predict(glm_cv,data.matrix(x_test_data), s="lambda.min", type="response" )
+predsauc <- prediction(glmPredls_p, test_data$isLegendary, label.ordering = c("FALSE", "TRUE"))
+
+
+#ROC
+prediction(glmPredls_p, y_test_data) %>% performance(measure = "tpr", x.measure = "fpr") %>% plot()
+abline(a=0, b= 1)
+
+#AUC
+prediction(glmPredls_p, y_test_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+PredTbl <- predict(glm_cv, data.matrix(x_test_data), type="class")
+table(actuals=test_data$isLegendary, preds=PredTbl)
+```
+
+**Naive Bayes Classifier**
+``` {r warning=FALSE,message=FALSE, error=FALSE}
+nbModel <- naiveBayes(isLegendary ~ ., data=train_data %>% select(-c(isLegendary,Number,Name),"isLegendary"), laplace = 1)
+nbPredTrn <- predict(nbModel, newdata = train_data, type="class")
+table(actuals=train_data$isLegendary, preds=nbPredTrn)
+nbPredTst <- predict(nbModel, newdata = test_data, type="class")
+table(actuals=test_data$isLegendary, preds=nbPredTst)
+
+```
+
+### Model Selection
+
+* 1. Regression without Regularization - This model fits the training data well.However, due to multi-collinear variables present in our dataset, the model's interpretability is not good.
+
+* 2. Naive Bayes - This Model does good work in fitting our training data as well as generalizing to our test data. However, its accuracy on our class of interest is lower than the regularized regression. 
+
+* 3. Regression with Regularization - This model fits the training data well with greater accuracy on our class of interest (Legentary = True). Also, using lasso regression has eliminated few of the multi-collinear variables from out data. Hence, model's interpretability is better and generalizes well on the test data. 
+
+  
+#### Hence, we shall pick Regression using Regularization (Lasso) as our Final Model
+  + We have used all the variables in building our final model except Sp_Atk , Color, hasMegaEvolution,HP and  weight              
+  + Accuracy on Training Data = 98.6%
+  + Precision = 0.991
+  + Recall = 0.994
+  + F1 Score = 0.992 
+  + Accuracy on Test Data = 99.1%
+  + Precision (Test Data) = 0.98
+  + Recall (Test Data) = 1
+  + F1 Score (Test Data) = 0.99
+  + AUC = 99.3
+
